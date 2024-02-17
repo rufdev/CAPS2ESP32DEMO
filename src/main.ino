@@ -3,9 +3,13 @@
 #define TRIGGER_PIN 0
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
+
+#include <TinyGPSPlus.h>
 // wifimanager can run in a blocking mode or a non blocking mode
 // Be sure to know how to process loops with no delay() if using non blocking
 bool wm_nonblocking = false; // change to true to use non blocking
+
+TinyGPSPlus gps;
 
 char deviceid[10];
 char server[50] = "http://localhost";
@@ -64,7 +68,8 @@ void mountSPIFFS()
 void setup()
 {
     WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
-    Serial.begin(115200);
+    Serial.begin(9600);
+    Serial2.begin(9600);
     Serial.setDebugOutput(true);
     // read configuration from FS json
     Serial.println("mounting FS...");
@@ -226,10 +231,49 @@ void saveParamCallback()
     shouldSaveConfig = true;
 }
 
+void updateSerial()
+{
+    delay(500);
+    while (Serial.available())
+    {
+        Serial2.write(Serial.read()); // Forward what Serial received to Software Serial Port
+    }
+    while (Serial2.available())
+    {
+        Serial.write(Serial2.read()); // Forward what Software Serial received to Serial Port
+    }
+}
+
+void displayInfo()
+{
+    Serial.print(F("Location: "));
+    if (gps.location.isValid())
+    {
+        Serial.print(gps.location.lat(), 6);
+        Serial.print(F(","));
+        Serial.print(gps.location.lng(), 6);
+    }
+    else
+    {
+        Serial.print(F("INVALID"));
+    }
+}
+
 void loop()
 {
     if (wm_nonblocking)
         wm.process(); // avoid delays() in loop when non-blocking and other long running code
     checkButton();
-    // put your main code here, to run repeatedly:
+
+    // updateSerial();
+    while (Serial2.available() > 0)
+        if (gps.encode(Serial2.read()))
+            displayInfo();
+              
+    if (millis() > 5000 && gps.charsProcessed() < 10)
+    {
+        Serial.println(F("No GPS detected: check wiring."));
+        while (true)
+            ;
+    }
 }
