@@ -6,9 +6,18 @@
 
 #include <TinyGPSPlus.h>
 #include <SocketIoClient.h>
+
+#include <LoRa.h>
+#include <SPI.h>
 // wifimanager can run in a blocking mode or a non blocking mode
 // Be sure to know how to process loops with no delay() if using non blocking
 bool wm_nonblocking = false; // change to true to use non blocking
+
+#define ss 5
+#define rst 14
+#define dio0 2
+
+int counter = 0;
 
 TinyGPSPlus gps;
 SocketIOclient socketIO;
@@ -27,58 +36,58 @@ WiFiManager wm; // global wm instance
 
 void socketIOEvent(socketIOmessageType_t type, uint8_t *payload, size_t length)
 {
-  switch (type)
-  {
-  case sIOtype_DISCONNECT:
-    Serial.printf("[IOc] Disconnected!\n");
-    break;
-  case sIOtype_CONNECT:
-    Serial.printf("[IOc] Connected to url: %s\n", payload);
+    switch (type)
+    {
+    case sIOtype_DISCONNECT:
+        Serial.printf("[IOc] Disconnected!\n");
+        break;
+    case sIOtype_CONNECT:
+        Serial.printf("[IOc] Connected to url: %s\n", payload);
 
-    // join default namespace (no auto join in Socket.IO V3)
-    socketIO.send(sIOtype_CONNECT, "/");
-    break;
-  case sIOtype_EVENT:
-  {
-    char *sptr = NULL;
-    int id = strtol((char *)payload, &sptr, 10);
-    Serial.printf("[IOc] get event: %s id: %d\n", payload, id);
-    if (id)
+        // join default namespace (no auto join in Socket.IO V3)
+        socketIO.send(sIOtype_CONNECT, "/");
+        break;
+    case sIOtype_EVENT:
     {
-      payload = (uint8_t *)sptr;
-    }
-    DynamicJsonDocument doc(1024);
-    DeserializationError error = deserializeJson(doc, payload, length);
-    if (error)
-    {
-      Serial.print(F("deserializeJson() failed: "));
-      Serial.println(error.c_str());
-      return;
-    }
+        char *sptr = NULL;
+        int id = strtol((char *)payload, &sptr, 10);
+        Serial.printf("[IOc] get event: %s id: %d\n", payload, id);
+        if (id)
+        {
+            payload = (uint8_t *)sptr;
+        }
+        DynamicJsonDocument doc(1024);
+        DeserializationError error = deserializeJson(doc, payload, length);
+        if (error)
+        {
+            Serial.print(F("deserializeJson() failed: "));
+            Serial.println(error.c_str());
+            return;
+        }
 
-    String eventName = doc[0];
-    Serial.printf("[IOc] event name: %s\n", eventName.c_str());
-    if (eventName == "datafromserver")
-    {
-      Serial.println("datafromserver");
-      int data = doc[1];
-      Serial.printf("data: %d\n", data);
+        String eventName = doc[0];
+        Serial.printf("[IOc] event name: %s\n", eventName.c_str());
+        if (eventName == "datafromserver")
+        {
+            Serial.println("datafromserver");
+            int data = doc[1];
+            Serial.printf("data: %d\n", data);
+        }
     }
-  }
-  break;
-  case sIOtype_ACK:
-    Serial.printf("[IOc] get ack: %u\n", length);
     break;
-  case sIOtype_ERROR:
-    Serial.printf("[IOc] get error: %u\n", length);
-    break;
-  case sIOtype_BINARY_EVENT:
-    Serial.printf("[IOc] get binary: %u\n", length);
-    break;
-  case sIOtype_BINARY_ACK:
-    Serial.printf("[IOc] get binary ack: %u\n", length);
-    break;
-  }
+    case sIOtype_ACK:
+        Serial.printf("[IOc] get ack: %u\n", length);
+        break;
+    case sIOtype_ERROR:
+        Serial.printf("[IOc] get error: %u\n", length);
+        break;
+    case sIOtype_BINARY_EVENT:
+        Serial.printf("[IOc] get binary: %u\n", length);
+        break;
+    case sIOtype_BINARY_ACK:
+        Serial.printf("[IOc] get binary ack: %u\n", length);
+        break;
+    }
 }
 
 void mountSPIFFS()
@@ -126,15 +135,32 @@ void mountSPIFFS()
 void setup()
 {
     WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
-    Serial.begin(9600);
-    Serial2.begin(9600);
+    Serial.begin(115200);
+
+    while (!Serial);
+
+    LoRa.setPins(ss, rst, dio0); 
+    Serial.println("LoRa Receiver");
+    if (!LoRa.begin(433E6))
+    { // or 915E6
+        Serial.println("Starting LoRa failed!");
+        while (1);
+    }
+
+    // gps module
+    //  Serial2.begin(9600);
+
     Serial.setDebugOutput(true);
+
+    // loraconfig
+
     // read configuration from FS json
     Serial.println("mounting FS...");
 
     mountSPIFFS();
 
     delay(3000);
+
     Serial.println("\n Starting");
 
     pinMode(TRIGGER_PIN, INPUT);
@@ -324,117 +350,133 @@ void displayInfo()
 
 void loop()
 {
+    int packetSize = LoRa.parsePacket(); // try to parse packet
+    if (packetSize)
+    {
+
+        Serial.print("Received packet '");
+
+        while (LoRa.available()) // read packet
+        {
+            String LoRaData = LoRa.readString();
+            Serial.print(LoRaData);
+        }
+        Serial.print("' with RSSI "); // print RSSI of packet
+        Serial.println(LoRa.packetRssi());
+    }
+  
+
     if (wm_nonblocking)
         wm.process(); // avoid delays() in loop when non-blocking and other long running code
     checkButton();
 
     // updateSerial();
-    while (Serial2.available() > 0)
-        if (gps.encode(Serial2.read()))
-            displayInfo();
-              
-    if (millis() > 5000 && gps.charsProcessed() < 10)
-    {
-        Serial.println(F("No GPS detected: check wiring."));
-        while (true)
-            ;
-    }
+    // while (Serial2.available() > 0)
+    //     if (gps.encode(Serial2.read()))
+    //         displayInfo();
+
+    // if (millis() > 5000 && gps.charsProcessed() < 10)
+    // {
+    //     Serial.println(F("No GPS detected: check wiring."));
+    //     while (true)
+    //         ;
+    // }
 
     socketIO.loop();
 
-  if (socketIO.isConnected())
-  {
-    // // Clears the trigPin
-    // digitalWrite(trigPin, LOW);
-    // delayMicroseconds(2);
-    // // Sets the trigPin on HIGH state for 10 micro seconds
-    // digitalWrite(trigPin, HIGH);
-    // delayMicroseconds(10);
-    // digitalWrite(trigPin, LOW);
+    if (socketIO.isConnected())
+    {
+        // // Clears the trigPin
+        // digitalWrite(trigPin, LOW);
+        // delayMicroseconds(2);
+        // // Sets the trigPin on HIGH state for 10 micro seconds
+        // digitalWrite(trigPin, HIGH);
+        // delayMicroseconds(10);
+        // digitalWrite(trigPin, LOW);
 
-    // // Reads the echoPin, returns the sound wave travel time in microseconds
-    // duration = pulseIn(echoPin, HIGH);
+        // // Reads the echoPin, returns the sound wave travel time in microseconds
+        // duration = pulseIn(echoPin, HIGH);
 
-    // // Calculate the distance
-    // distanceCm = duration * SOUND_SPEED / 2;
+        // // Calculate the distance
+        // distanceCm = duration * SOUND_SPEED / 2;
 
-    // // Convert to inches
-    // distanceInch = distanceCm * CM_TO_INCH;
+        // // Convert to inches
+        // distanceInch = distanceCm * CM_TO_INCH;
 
-    // photoresistorvalue = analogRead(photoPin);
-    // // Serial.print("Photoresistor value: ");
-    // // Serial.println(photoresistorvalue);
-    // ambianttemp = mlx.readAmbientTempC();
-    // // Serial.print("Ambiant temperature: ");
-    // // Serial.println(ambianttemp);
-    // objecttemp = mlx.readObjectTempC();
-    // // Serial.print("Object temperature: ");
-    // // Serial.println(objecttemp);
+        // photoresistorvalue = analogRead(photoPin);
+        // // Serial.print("Photoresistor value: ");
+        // // Serial.println(photoresistorvalue);
+        // ambianttemp = mlx.readAmbientTempC();
+        // // Serial.print("Ambiant temperature: ");
+        // // Serial.println(ambianttemp);
+        // objecttemp = mlx.readObjectTempC();
+        // // Serial.print("Object temperature: ");
+        // // Serial.println(objecttemp);
 
-    // bool led1PinStatus = digitalRead(led1Pin);
-    // bool led2PinStatus = digitalRead(led2Pin);
-    // bool led3PinStatus = digitalRead(led3Pin);
-    // bool led4PinStatus = digitalRead(led4Pin);
+        // bool led1PinStatus = digitalRead(led1Pin);
+        // bool led2PinStatus = digitalRead(led2Pin);
+        // bool led3PinStatus = digitalRead(led3Pin);
+        // bool led4PinStatus = digitalRead(led4Pin);
 
-    // // read humidity
-    // float humi = dht_sensor.readHumidity();
-    // // read temperature in Celsius
-    // float tempC = dht_sensor.readTemperature();
-    // // read temperature in Fahrenheit
-    // float tempF = dht_sensor.readTemperature(true);
+        // // read humidity
+        // float humi = dht_sensor.readHumidity();
+        // // read temperature in Celsius
+        // float tempC = dht_sensor.readTemperature();
+        // // read temperature in Fahrenheit
+        // float tempF = dht_sensor.readTemperature(true);
 
-    // // check whether the reading is successful or not
-    // if (isnan(tempC) || isnan(tempF) || isnan(humi))
-    // {
-    //   Serial.println("Failed to read from DHT sensor!");
-    // }
-    // else
-    // {
-    //   Serial.print("Humidity: ");
-    //   Serial.print(humi);
-    //   Serial.print("%");
+        // // check whether the reading is successful or not
+        // if (isnan(tempC) || isnan(tempF) || isnan(humi))
+        // {
+        //   Serial.println("Failed to read from DHT sensor!");
+        // }
+        // else
+        // {
+        //   Serial.print("Humidity: ");
+        //   Serial.print(humi);
+        //   Serial.print("%");
 
-    //   Serial.print("  |  ");
+        //   Serial.print("  |  ");
 
-    //   Serial.print("Temperature: ");
-    //   Serial.print(tempC);
-    //   Serial.print("°C  ~  ");
-    //   Serial.print(tempF);
-    //   Serial.println("°F");
-    // }
+        //   Serial.print("Temperature: ");
+        //   Serial.print(tempC);
+        //   Serial.print("°C  ~  ");
+        //   Serial.print(tempF);
+        //   Serial.println("°F");
+        // }
 
-    delay(1000);
+        delay(1000);
 
-    // // creat JSON message for Socket.IO (event)
-    // DynamicJsonDocument doc(1024);
-    // JsonArray array = doc.to<JsonArray>();
+        // // creat JSON message for Socket.IO (event)
+        // DynamicJsonDocument doc(1024);
+        // JsonArray array = doc.to<JsonArray>();
 
-    // // add evnet name
-    // // Hint: socket.on('event_name', ....
-    // array.add("iotdata");
+        // // add evnet name
+        // // Hint: socket.on('event_name', ....
+        // array.add("iotdata");
 
-    // // add payload (parameters) for the event
-    // JsonObject param1 = array.createNestedObject();
-    // param1["pr"] = (uint32_t)photoresistorvalue;
-    // param1["at"] = ambianttemp;
-    // param1["ot"] = objecttemp;
-    // param1["uss"] = distanceCm;
-    // param1["humi"] = humi;
-    // param1["tempC"] = tempC;
-    // param1["tempF"] = tempF;
-    // param1["led1"] = led1PinStatus;
-    // param1["led2"] = led2PinStatus;
-    // param1["led3"] = led3PinStatus;
-    // param1["led4"] = led4PinStatus;
+        // // add payload (parameters) for the event
+        // JsonObject param1 = array.createNestedObject();
+        // param1["pr"] = (uint32_t)photoresistorvalue;
+        // param1["at"] = ambianttemp;
+        // param1["ot"] = objecttemp;
+        // param1["uss"] = distanceCm;
+        // param1["humi"] = humi;
+        // param1["tempC"] = tempC;
+        // param1["tempF"] = tempF;
+        // param1["led1"] = led1PinStatus;
+        // param1["led2"] = led2PinStatus;
+        // param1["led3"] = led3PinStatus;
+        // param1["led4"] = led4PinStatus;
 
-    // // JSON to String (serializion)
-    // String output;
-    // serializeJson(doc, output);
+        // // JSON to String (serializion)
+        // String output;
+        // serializeJson(doc, output);
 
-    // // Send event
-    // socketIO.sendEVENT(output);
+        // // Send event
+        // socketIO.sendEVENT(output);
 
-    // Print JSON for debugging
-    // Serial.println(output);
-  }
+        // Print JSON for debugging
+        // Serial.println(output);
+    }
 }
