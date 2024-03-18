@@ -1,0 +1,58 @@
+/*
+ * Rui Santos 
+ * Complete Project Details https://randomnerdtutorials.com
+ */
+ 
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+#include <SPI.h>
+#include <LoRa.h> 
+//int pot = A0;
+
+static const int RXPin = 4, TXPin = 3;
+static const uint32_t GPSBaud = 9600;
+
+// The TinyGPS++ object
+TinyGPSPlus gps;
+
+// The serial connection to the GPS device
+SoftwareSerial ss(RXPin, TXPin);
+
+void setup(){
+  Serial.begin(9600);
+  ss.begin(GPSBaud);
+
+//  pinMode(pot,INPUT);
+  
+  while (!Serial);  
+  Serial.println("LoRa Sender");
+  if (!LoRa.begin(433E6)) { // or 915E6, the MHz speed of yout module
+    Serial.println("Starting LoRa failed!");
+    while (1);
+  }
+}
+
+void loop(){
+  // This sketch displays information every time a new sentence is correctly encoded.
+  
+ 
+  while (ss.available() > 0){
+    gps.encode(ss.read());
+    if (gps.location.isUpdated()){
+      
+      Serial.print("Latitude= "); 
+      Serial.print(gps.location.lat(), 6);
+      Serial.print(" Longitude= "); 
+      Serial.println(gps.location.lng(), 6);
+      LoRa.beginPacket();  
+      LoRa.print("lat: ");
+      LoRa.println(gps.location.lat(),6);
+      LoRa.print("lon: ");
+      LoRa.println(gps.location.lng(),6);
+      LoRa.endPacket();
+      delay(50);
+    }
+    
+  }
+
+}
